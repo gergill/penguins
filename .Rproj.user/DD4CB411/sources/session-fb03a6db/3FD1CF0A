@@ -1,0 +1,28 @@
+{
+    "id": "3FD1CF0A",
+    "path": null,
+    "project_path": null,
+    "type": "object_explorer",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1761345303457.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "id": "8227df1878f241949ca68d8e0bffa8bc",
+        "name": "penguin_balls",
+        "title": "penguin_balls",
+        "language": "R",
+        "source_window_id": "",
+        "Source": "Source"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1761344992,
+    "encoding": "",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1761345303457,
+    "read_only": false,
+    "read_only_alternatives": []
+}

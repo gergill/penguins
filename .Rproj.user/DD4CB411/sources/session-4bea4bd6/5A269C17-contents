@@ -1,0 +1,148 @@
+#if(!require("BiocManager")) {
+#  install.packages("BiocManager", repos = "https://cloud.r-project.org")
+#  BiocManager::install("RCy3", force=TRUE)
+#}
+
+library(devtools)
+library(mappeR)
+library(RCy3)
+
+source("draw_trees.R")
+source("aptamer_clusterer.R")
+source("cytoscape-stuff.R")
+
+# data input and distance matrix creation ---------------------------------
+
+# I don't think there are actually missing values but I can't trust myself
+node_data = na.omit(as.data.frame(read.csv("data/all_selex_data.csv")))
+edge_data = na.omit(as.data.frame(read.csv("data/aptamer_edges.csv")))
+
+# making sure R doesn't have any cause to yell at me
+all_aptamer_names = gsub(">hVSMC-", "Ruiz-RNA_", node_data$Name)
+rownames(node_data) = all_aptamer_names
+node_data$Name = all_aptamer_names
+
+# flatten interactions column into a list of strings formatted as
+# ["source aptamer", "to", "target aptamer"]
+squished_edges = unlist(strsplit(edge_data$name, " "))
+
+# recover sources/targets via above formatting
+sources = squished_edges[seq(1, length(squished_edges), 3)]
+targets = squished_edges[seq(3, length(squished_edges), 3)]
+
+edge_data$sources = sources
+edge_data$targets = targets
+
+missing_aptamers = setdiff(all_aptamer_names, unique(union(sources, targets)))
+
+our_aptamers = setdiff(all_aptamer_names, missing_aptamers)
+
+edge_data = edge_data[edge_data$source %in% our_aptamers,]
+edge_data = edge_data[edge_data$target %in% our_aptamers,]
+node_data = node_data[node_data$Name %in% our_aptamers,]
+
+sources = edge_data$sources
+targets = edge_data$targets
+
+num_aptamers = length(unique(union(sources, targets)))
+
+# grab entire source/target aptamer locations in mother dataset
+row_indices = match(sources, node_data$Name)
+col_indices = match(targets, node_data$Name)
+
+# create empty edit distance matrix
+edit_dists = matrix(0, nrow = num_aptamers, ncol = num_aptamers)
+
+# populate edit distance matrix
+edit_dists[cbind(row_indices, col_indices)] = edge_data$editDistance
+edit_dists[cbind(col_indices, row_indices)] = edge_data$editDistance
+
+# again I'm being paranoid
+rownames(edit_dists) = node_data$Name
+colnames(edit_dists) = node_data$Name
+
+# create empty tree distance matrix
+tree_dists = matrix(0, nrow = num_aptamers, ncol = num_aptamers)
+
+# populate tree distance matrix
+tree_dists[cbind(row_indices, col_indices)] = edge_data$treeDistance
+tree_dists[cbind(col_indices, row_indices)] = edge_data$treeDistance
+
+# again I'm being paranoid
+rownames(tree_dists) = node_data$Name
+colnames(tree_dists) = node_data$Name
+
+edge_data$both = edge_data$editDistance + edge_data$treeDistance
+edge_data$both_norm = edge_data$editDistance/max(edge_data$editDistance) + edge_data$treeDistance/max(edge_data$treeDistance)
+both = edit_dists + tree_dists
+both_norm = edit_dists/max(edit_dists) + tree_dists/max(tree_dists)
+
+# add enrichments
+
+rounds = c("RP10M.0A", "RP10M.0B", "RP10M.0C",
+           "RP10M.1A", "RP10M.1B", "RP10M.1C",
+           "RP10M.2A", "RP10M.2B", "RP10M.2C",
+           "RP10M.3A", "RP10M.3B", "RP10M.3C",
+           "RP10M.4",
+           "RP10M.5",
+           "RP10M.6",
+           "RP10M.7",
+           "RP10M.8",
+           "RP10M.9")
+
+round_pairs = combn(rounds, 2)
+enrichments = apply(round_pairs, 2, function(y) log2(node_data[y[2]]/node_data[y[1]]))
+names(enrichments) = apply(round_pairs, 2, function(x) paste(x[1], "to", x[2]))
+enrichments = lapply(enrichments, as.data.frame, drop = FALSE)
+node_data = cbind(node_data, sapply(enrichments, function(x) x[,1]))
+
+# distances and differences -------------------------------------------------------------------
+
+affinity_diffs = abs(log2(node_data[edge_data$sources, "ASSET.hVSMC.hEC"]) - log2(node_data[edge_data$targets, "ASSET.hVSMC.hEC"]))
+enrichment_diffs = abs(node_data[edge_data$sources, "RP10M.0A to RP10M.9"] - node_data[edge_data$targets, "RP10M.0A to RP10M.9"])
+
+plot(edge_data$editDistance, affinity_diffs, pch = 20, xlab = "edit distance", ylab = "ASSET 2-fold-difference")
+plot(edge_data$treeDistance, affinity_diffs, pch = 20, xlab = "tree distance", ylab = "ASSET 2-fold-difference")
+plot(edge_data$both, affinity_diffs, pch = 20, xlab = "edit + tree distance", ylab = "ASSET 2-fold-difference")
+plot(edge_data$both_norm, affinity_diffs, pch = 20, xlab = "normalized edit + normalized tree distance", ylab = "ASSET 2-fold difference")
+
+plot(edge_data$editDistance, enrichment_diffs, pch = 20, xlab = "edit distance", ylab = "SELEX R0-9 enrichment 2-fold-difference")
+plot(edge_data$treeDistance, enrichment_diffs, pch = 20, xlab = "tree distance", ylab = "SELEX R0-9 enrichment 2-fold-difference")
+plot(edge_data$both, enrichment_diffs, pch = 20, xlab = "edit + tree distance", ylab = "SELEX R0-9 enrichment 2-fold-difference")
+plot(edge_data$both_norm, enrichment_diffs, pch = 20, xlab = "normalized edit + normalized tree distance", ylab = "SELEX R0-9 enrichment 2-fold difference")
+
+# mapper graph creation ---------------------------------------------------
+
+# function which makes a ball mapper graph and populates it with data
+create_ballmapptamer_graph <- function(dists, eps) {
+  # mapper time
+  mapptamer = create_ball_mapper_object(node_data, dists, eps)
+
+  # get aptamers in vertices of mapper graph
+  aptamer_balls = lapply(mapptamer[[1]]$data, function(x) node_data[unlist(strsplit(x, ", ")),])
+
+  # calculate mean selex data across mapper vertices
+  selex_enrichment = sapply(1:length(round_pairs[1,]), function(y) sapply(aptamer_balls, function(x) mean(node_data[x$Name, y + 23])))
+  colnames(selex_enrichment) = apply(round_pairs, 2, function(x) paste(x[1], "to", x[2]))
+  # print(selex_enrichment)
+
+  # calculate mean ASSET data across mapper vertices
+  mean_log2_human_affinity = sapply(aptamer_balls, function(x) mean(log2(node_data[x$Name, "ASSET.hVSMC.hEC"])))
+  mean_log2_mouse_affinity = sapply(aptamer_balls, function(x) mean(log2(node_data[x$Name, "ASSET.mVSMC.mEC"])))
+
+  # attach calculated info to mapper dataframe
+  # mapptamer[[1]]$mean_log2_selex_enrichment = round(mean_log2_selex_enrichment, 5)
+  mapptamer[[1]]$mean_log2_human_affinity = round(mean_log2_human_affinity, 5)
+  mapptamer[[1]]$mean_log2_mouse_affinity = round(mean_log2_mouse_affinity, 5)
+
+  mapptamer[[1]] = cbind(mapptamer[[1]], selex_enrichment)
+
+  return(mapptamer)
+}
+
+mapper = create_ballmapptamer_graph(edit_dists, 3)
+threshold = .6
+correlatable = subset(mapper[[1]], select = -c(id, medoid, data))
+cors = cor(correlatable)
+corrtext = rev(sort(paste(row.names(cors)[which(abs(cors > threshold) & cors != 1, arr.ind = TRUE)[,1]], "is correlated with", colnames(cors)[which(abs(cors > threshold) & cors != 1, arr.ind = TRUE)[,2]])))
+corrtext

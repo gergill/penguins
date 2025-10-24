@@ -1,0 +1,886 @@
+library(mappeR)
+library(parallel)
+library(ggplot2)
+
+# data input and distance matrix creation ---------------------------------
+
+aptamer_data = read.table("data/Aptamers.txt")
+edge_data = read.table("data/Distances.txt")
+
+colnames(edge_data) = c("source", "to", "target", "edit", "tree")
+edge_data = edge_data[-1, ]
+edge_data$source = gsub("hVSMC-", "", edge_data$source)
+edge_data$target = gsub("hVSMC-", "", edge_data$target)
+edge_data = edge_data[-2]
+edge_data$edit = as.numeric(edge_data$edit)
+edge_data$tree = as.numeric(edge_data$tree)
+
+colnames(aptamer_data) = c("aptamer", "sequence", "structure", "human_asset", "mouse_asset")
+aptamer_data = aptamer_data[-1, ]
+aptamer_data$aptamer = gsub("hVSMC-", "", aptamer_data$aptamer)
+row.names(aptamer_data) = aptamer_data$aptamer
+aptamer_data$human_asset = as.numeric(aptamer_data$human_asset)
+aptamer_data$mouse_asset = as.numeric(aptamer_data$mouse_asset)
+
+# selex rounds
+rounds = c("RP10M.0A", "RP10M.0B", "RP10M.0C",
+           "RP10M.1A", "RP10M.1B", "RP10M.1C",
+           "RP10M.2A", "RP10M.2B", "RP10M.2C",
+           "RP10M.3A", "RP10M.3B", "RP10M.3C",
+           "RP10M.4",
+           "RP10M.5",
+           "RP10M.6",
+           "RP10M.7",
+           "RP10M.8",
+           "RP10M.9")
+
+selex_aptamers = na.omit(as.data.frame(read.csv("data/all_selex_data.csv")))
+
+# get trimmed names to just last 4 digits
+selex_aptamers$Name = gsub(">hVSMC-", "", selex_aptamers$Name)
+row.names(selex_aptamers) = selex_aptamers$Name
+selex_aptamers = selex_aptamers[aptamer_data$aptamer,]
+aptamer_data = cbind(aptamer_data, selex_aptamers[, rounds])
+
+# get all pairs of selex rounds
+round_pairs = combn(rounds, 2)
+
+# calculate log2 of ratio between all rounds to get round-to-round enrichments
+enrichments = apply(round_pairs, 2, function(y) log2(aptamer_data[y[2]]/aptamer_data[y[1]]))
+
+# name enrichment columns to "roundb:rounda"
+names(enrichments) = apply(round_pairs, 2, function(x) paste(x[2], ":", x[1], sep = ""))
+
+# make each enrichment vector into a data frame
+enrichments = lapply(enrichments, as.data.frame, drop = FALSE)
+
+# append all enrichment columns to master data frame
+aptamer_data = cbind(aptamer_data, sapply(enrichments, function(x) x[,1]))
+
+num_aptamers = length(unique(union(edge_data$source, edge_data$target)))
+
+# grab entire source/target aptamer locations in mother dataset
+row_indices = match(edge_data$source, aptamer_data$aptamer)
+col_indices = match(edge_data$target, aptamer_data$aptamer)
+
+# create empty tree distance matrix
+tree_dists = matrix(0, nrow = num_aptamers, ncol = num_aptamers)
+
+# populate tree distance matrix
+tree_dists[cbind(row_indices, col_indices)] = edge_data$tree
+tree_dists[cbind(col_indices, row_indices)] = edge_data$tree
+
+rownames(tree_dists) = aptamer_data$aptamer
+colnames(tree_dists) = aptamer_data$aptamer
+
+# create empty edit distance matrix
+edit_dists = matrix(0, nrow = num_aptamers, ncol = num_aptamers)
+
+# populate tree distance matrix
+edit_dists[cbind(row_indices, col_indices)] = edge_data$edit
+edit_dists[cbind(col_indices, row_indices)] = edge_data$edit
+
+rownames(edit_dists) = aptamer_data$aptamer
+colnames(edit_dists) = aptamer_data$aptamer
+
+both_dists = edit_dists + tree_dists
+both_normalized_dists = (edit_dists/max(edit_dists) + tree_dists/max(tree_dists))/2
+
+# distances and differences -------------------------------------------------------------------
+
+edge_data$human_affinity_diffs = abs(log2(aptamer_data[edge_data$source, "human_asset"]) - log2(aptamer_data[edge_data$target, "human_asset"]))
+edge_data$mouse_affinity_diffs = abs(log2(aptamer_data[edge_data$source, "mouse_asset"]) - log2(aptamer_data[edge_data$target, "mouse_asset"]))
+# enrichment_diffs = abs(aptamer_data[edge_data$source, "RP10M.0A to RP10M.9"] - aptamer_data[edge_data$target, "RP10M.0A to RP10M.9"])
+
+edge_data$tree = as.factor(edge_data$tree)
+edge_data$edit = as.factor(edge_data$edit)
+
+ggplot(edge_data, aes(x = edit, y = human_affinity_diffs)) +
+  theme_minimal() +
+  geom_boxplot(fill = "red") +
+  ggtitle("Pairs of Group A Aptamers by Edit Distance and Human Affinity Difference") +
+  xlab("Edit Distance") +
+  ylab("Difference in Log2 Human ASSET") +
+  theme(plot.title = element_text(size=20), axis.text = element_text(size=10), axis.title = element_text(size=17))
+ggsave("plots/genetic_human_asset_diffs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(edge_data, aes(x = edit, y = mouse_affinity_diffs)) +
+  theme_minimal() +
+  geom_boxplot(fill = "pink") +
+  ggtitle("Pairs of Group A Aptamers by Edit Distance and Mouse Affinity Difference") +
+  xlab("Edit Distance") +
+  ylab("Difference in Log2 Mouse ASSET") +
+  theme(plot.title = element_text(size=20), axis.text = element_text(size=10), axis.title = element_text(size=17))
+ggsave("plots/genetic_mouse_asset_diffs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(edge_data, aes(x = tree, y = mouse_affinity_diffs)) +
+  theme_minimal() +
+  geom_boxplot(fill = "pink") +
+  ggtitle("Pairs of Group A Aptamers by Tree Distance and Mouse Affinity Difference") +
+  xlab("Tree Distance") +
+  ylab("Difference in Log2 Mouse ASSET") +
+  theme(plot.title = element_text(size=20), axis.text = element_text(size=10), axis.title = element_text(size=17))
+ggsave("plots/structural_mouse_asset_diffs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(edge_data, aes(x = tree, y = human_affinity_diffs)) +
+  theme_minimal() +
+  geom_boxplot(fill = "red") +
+  ggtitle("Pairs of Group A Aptamers by Tree Distance and Human Affinity Difference") +
+  xlab("Tree Distance") +
+  ylab("Difference in Log2 Human ASSET") +
+  theme(plot.title = element_text(size=20), axis.text = element_text(size=10), axis.title = element_text(size=17))
+ggsave("plots/structural_human_asset_diffs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(edge_data, aes(x = human_affinity_diffs, y = mouse_affinity_diffs)) +
+  theme_minimal() +
+  geom_point() +
+  ggtitle("Pairs of Group A Aptamers by Human and Mouse Affinity Differences") +
+  xlab("Difference in Log2 Human ASSET") +
+  ylab("Difference in Log2 Mouse ASSET") +
+  theme(plot.title = element_text(size=20), axis.text = element_text(size=10), axis.title = element_text(size=17))
+ggsave("plots/human_mouse_asset_diffs.jpg", height = 2000, width = 3236, units = "px")
+
+
+# tda stuff -----------------------------------------------------------------------------------
+
+# function which makes a ball mapper graph and populates it with data
+create_ballmapptamer_graph <- function(dists, eps) {
+  # print("making mapper...")
+  # mapper time
+  mapptamer = create_ball_mapper_object(aptamer_data, dists, eps)
+
+  while (nrow(mapptamer[[1]]) < 3) {
+    mapptamer = create_ball_mapper_object(aptamer_data, dists, eps)
+  }
+  # print(paste(nrow(mapptamer[[1]]), "vertices"))
+
+  # get aptamers in vertices of mapper graph
+  aptamer_balls = lapply(mapptamer[[1]]$data, function(x) aptamer_data[unlist(strsplit(x, ", ")),])
+
+  # calculate mean selex data across mapper vertices
+  mean_selex_enrichment = sapply(1:length(round_pairs[1,]), function(y) sapply(aptamer_balls, function(x) mean(aptamer_data[x$aptamer, y + 23])))
+  # print(mean_selex_enrichment)
+  colnames(mean_selex_enrichment) = apply(round_pairs, 2, function(x) paste("mean", x[1], "to", x[2]))
+
+  # calculate median selex data across mapper vertices
+  median_selex_enrichment = sapply(1:length(round_pairs[1,]), function(y) sapply(aptamer_balls, function(x) median(aptamer_data[x$aptamer, y + 23])))
+  colnames(median_selex_enrichment) = apply(round_pairs, 2, function(x) paste("median", x[1], "to", x[2]))
+
+  # calculate mean ASSET data across mapper vertices
+  mean_log2_human_affinity = sapply(aptamer_balls, function(x) mean(log2(aptamer_data[x$aptamer, "human_asset"])))
+  mean_log2_mouse_affinity = sapply(aptamer_balls, function(x) mean(log2(aptamer_data[x$aptamer, "mouse_asset"])))
+
+  median_log2_human_affinity = sapply(aptamer_balls, function(x) median(log2(aptamer_data[x$aptamer, "human_asset"])))
+  median_log2_mouse_affinity = sapply(aptamer_balls, function(x) median(log2(aptamer_data[x$aptamer, "mouse_asset"])))
+
+  # attach calculated info to mapper dataframe
+  # mapptamer[[1]]$mean_log2_selex_enrichment = round(mean_log2_selex_enrichment, 5)
+  mapptamer[[1]]$mean_log2_human_affinity = round(mean_log2_human_affinity, 5)
+  mapptamer[[1]]$mean_log2_mouse_affinity = round(mean_log2_mouse_affinity, 5)
+  mapptamer[[1]]$median_log2_human_affinity = round(mean_log2_human_affinity, 5)
+  mapptamer[[1]]$median_log2_mouse_affinity = round(mean_log2_mouse_affinity, 5)
+  mapptamer[[1]] = cbind(mapptamer[[1]], mean_selex_enrichment)
+  mapptamer[[1]] = cbind(mapptamer[[1]], median_selex_enrichment)
+  return(mapptamer)
+}
+
+get_cors <- function(dists, eps, human = TRUE) {
+  sample_size = 2500
+
+  ballmappers = mclapply(1:sample_size, function(x) create_ballmapptamer_graph(dists, eps), mc.cores = detectCores())
+  human_medians = sapply(ballmappers, function(x) cor(x[[1]]$median_log2_human_affinity, x[[1]]$`median RP10M.0A to RP10M.9`))
+  human_means = sapply(ballmappers, function(x) cor(x[[1]]$mean_log2_human_affinity, x[[1]]$`mean RP10M.0A to RP10M.9`))
+
+  mouse_medians = sapply(ballmappers, function(x) cor(x[[1]]$median_log2_mouse_affinity, x[[1]]$`median RP10M.0A to RP10M.9`))
+  mouse_means = sapply(ballmappers, function(x) cor(x[[1]]$mean_log2_mouse_affinity, x[[1]]$`mean RP10M.0A to RP10M.9`))
+
+  order = sapply(ballmappers, function(x) nrow(x[[1]]))
+  size = sapply(ballmappers, function(x) ifelse(is.na(mean(x[[2]]$weight)), 0, nrow(x[[2]])))
+  density = size/(order*(order - 1)/2)
+
+  mean_cluster_size = sapply(ballmappers, function(x) mean(x[[1]]$cluster_size))
+  median_cluster_size = sapply(ballmappers, function(x) median(x[[1]]$cluster_size))
+
+  mean_wcss = sapply(ballmappers, function(x) mean(x[[1]]$wcss))
+  median_wcss = sapply(ballmappers, function(x) median(x[[1]]$wcss))
+
+  mean_jaccard = sapply(ballmappers, function(x) ifelse(is.na(mean(x[[2]]$weight)), 0, mean(x[[2]]$weight)))
+  median_jaccard = sapply(ballmappers, function(x) ifelse(is.null(median(x[[2]]$weight)), 0, median(x[[2]]$weight)))
+
+  return(cbind("eps" = rep(eps, length(human_means)), human_means, human_medians, mouse_means, mouse_medians, order, size, density, mean_cluster_size, median_cluster_size, mean_wcss, median_wcss, mean_jaccard, median_jaccard))
+}
+
+print("creating structural correlation data...")
+
+aptamer_data_names = c("eps",
+                       "human_means", "human_medians",
+                       "mouse_means", "mouse_medians",
+                       "order", "size", "density",
+                       "mean_cluster_size", "median_cluster_size",
+                       "mean_wcss", "median_wcss",
+                       "mean_jaccard", "median_jaccard")
+
+start = Sys.time()
+
+structure_range = 2:36
+structural_data = lapply(structure_range, get_cors, dists = tree_dists)
+structural_cors = as.data.frame(sapply(1:ncol(structural_data[[1]]), function(y) as.vector(sapply(structural_data, function(x) x[, y]))))
+rm(structural_data)
+colnames(structural_cors) = aptamer_data_names
+structural_cors[, "eps"] = as.factor(structural_cors[, "eps"])
+
+ggplot(structural_cors, aes(x = eps, y = order)) +
+  geom_boxplot(fill = "orange") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Order") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Orders of Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_order.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = size)) +
+  geom_boxplot(fill = "violet") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Size") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Sizes of Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = density)) +
+  geom_boxplot(fill = "lightgray") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Density") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Densities of Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_density.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = mean_wcss)) +
+  geom_boxplot(fill = "darkcyan") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Mean WCSS") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Mean Within-Cluster Sum of Squared Distances in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_mean_wcss.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = median_wcss)) +
+  geom_boxplot(fill = "darkcyan") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Median WCSS") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Median Within-Cluster Sum of Squared Distances in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_median_wcss.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = mean_cluster_size)) +
+  geom_boxplot(fill = "#0000FF") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Mean Cluster Size") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Mean Cluster Sizes in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_mean_cluster_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = median_cluster_size)) +
+  geom_boxplot(fill = "#0000FF") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Median Cluster Size") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Median Cluster Sizes in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_median_cluster_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = mean_jaccard)) +
+  geom_boxplot(fill = "forestgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Mean Jaccard Index") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Mean Overlap in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_mean_jaccard.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = median_jaccard)) +
+  geom_boxplot(fill = "forestgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Median Jaccard Index") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Median Overlap in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_median_jaccard.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = human_medians)) +
+  geom_boxplot(fill = "#FF0000") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Correlation Between Median Log2 Human ASSET and Median Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Correlations Between Median Human Affinity and Median SELEX Enrichment in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+  # geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_median_human_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = human_means)) +
+  geom_boxplot(fill = "#FF0000") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Correlation Between Mean Log2 Human ASSET and Mean Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Correlations Between Mean Human Affinity and Mean SELEX Enrichment in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/structural/structural_ballmapper_mean_human_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = mouse_means)) +
+  geom_boxplot(fill = "#FFB0B0") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Correlation Between Mean Log2 Mouse ASSET and Mean Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ggtitle("Correlations Between Mean Mouse Affinity and Mean SELEX Enrichment in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/structural/structural_ballmapper_mean_mouse_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(structural_cors, aes(x = eps, y = mouse_medians)) +
+  geom_boxplot(fill = "#FFB0B0") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  scale_x_discrete(labels = structure_range - 1) +
+  ylab("Correlation Between Median Log2 Mouse ASSET and Median Log2 R0A-R9 Enrichment") +
+  ggtitle("Correlations Between Median Mouse Affinity and Median SELEX Enrichment in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/structural/structural_ballmapper_median_mouse_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+print(paste("time taken:", as.numeric(Sys.time() - start)))
+write.csv(structural_cors, "plots/structural/structural_data.csv")
+rm(structural_cors)
+print("creating genetic correlation data...")
+start = Sys.time()
+
+genetic_range = 2:8
+genetic_data = lapply(genetic_range, get_cors, dists = edit_dists)
+genetic_cors = as.data.frame(sapply(1:ncol(genetic_data[[1]]), function(y) as.vector(sapply(genetic_data, function(x) x[, y]))))
+rm(genetic_data)
+colnames(genetic_cors) = aptamer_data_names
+genetic_cors[, "eps"] = as.factor(genetic_cors[, "eps"])
+
+ggplot(genetic_cors, aes(x = eps, y = order)) +
+  geom_boxplot(fill = "orange") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Order") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Orders of Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/genetic/genetic_ballmapper_order.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = size)) +
+  geom_boxplot(fill = "violet") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Size") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Sizes of Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/genetic/genetic_ballmapper_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = density)) +
+  geom_boxplot(fill = "lightgray") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Density") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Densities of Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/genetic/genetic_ballmapper_density.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = mean_wcss)) +
+  geom_boxplot(fill = "darkcyan") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Mean WCSS") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Mean Within-Cluster Sum of Squared Distances in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/genetic/genetic_ballmapper_mean_wcss.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = median_wcss)) +
+  geom_boxplot(fill = "darkcyan") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Median WCSS") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Median Within-Cluster Sum of Squared Distances in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/genetic/genetic_ballmapper_median_wcss.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = mean_cluster_size)) +
+  geom_boxplot(fill = "#0000FF") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Mean Cluster Size") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Mean Cluster Sizes in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/genetic/genetic_ballmapper_mean_cluster_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = median_cluster_size)) +
+  geom_boxplot(fill = "#0000FF") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Median Cluster Size") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Median Cluster Sizes in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/genetic/genetic_ballmapper_median_cluster_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = mean_jaccard)) +
+  geom_boxplot(fill = "forestgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Mean Jaccard Index") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Mean Overlap in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/genetic/genetic_ballmapper_mean_jaccard.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = median_jaccard)) +
+  geom_boxplot(fill = "forestgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Median Jaccard Index") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Median Overlap in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/genetic/genetic_ballmapper_median_jaccard.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = human_means)) +
+  geom_boxplot(fill = "#FF0000") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Correlation Between Mean Log2 Human ASSET and Mean Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Correlations Between Mean Human Affinity and Mean SELEX Enrichment in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/genetic/genetic_ballmapper_mean_human_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = human_medians)) +
+  geom_boxplot(fill = "#FF0000") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Correlation Between Median Log2 Human ASSET and Median Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Correlations Between Median Human Affinity and Median SELEX Enrichment in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/genetic/genetic_ballmapper_median_human_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = mouse_means)) +
+  geom_boxplot(fill = "#FFB0B0") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Correlation Between Mean Log2 Mouse ASSET and Mean Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Correlations Between Mean Mouse Affinity and Mean SELEX Enrichment in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/genetic/genetic_ballmapper_mean_mouse_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(genetic_cors, aes(x = eps, y = mouse_medians)) +
+  geom_boxplot(fill = "#FFB0B0") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit Distance)") +
+  ylab("Correlation Between Median Log2 Mouse ASSET and Median Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = genetic_range - 1) +
+  ggtitle("Correlations Between Median Mouse Affinity and Median SELEX Enrichment in Genetic Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/genetic/genetic_ballmapper_median_mouse_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+
+print(paste("time taken:", as.numeric(Sys.time() - start)))
+write.csv(genetic_cors, "plots/genetic/genetic_data.csv")
+rm(genetic_cors)
+print("creating combined correlation data...")
+start = Sys.time()
+
+combined_range = 2:40
+combined_data = lapply(combined_range, get_cors, dists = both_dists)
+combined_cors = as.data.frame(sapply(1:ncol(combined_data[[1]]), function(y) as.vector(sapply(combined_data, function(x) x[, y]))))
+rm(combined_data)
+colnames(combined_cors) = aptamer_data_names
+combined_cors[, "eps"] = as.factor(combined_cors[, "eps"])
+
+ggplot(combined_cors, aes(x = eps, y = order)) +
+  geom_boxplot(fill = "orange") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Order") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Orders of Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/combined/combined_ballmapper_order.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = size)) +
+  geom_boxplot(fill = "violet") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Size") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Sizes of Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/combined/combined_ballmapper_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = density)) +
+  geom_boxplot(fill = "lightgray") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Density") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Densities of Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/combined/combined_ballmapper_density.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = mean_wcss)) +
+  geom_boxplot(fill = "darkcyan") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Mean WCSS") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Mean Within-Cluster Sum of Squared Distances in Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/combined/combined_ballmapper_mean_wcss.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = median_wcss)) +
+  geom_boxplot(fill = "darkcyan") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Median WCSS") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Median Within-Cluster Sum of Squared Distances in Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/combined/combined_ballmapper_median_wcss.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = mean_cluster_size)) +
+  geom_boxplot(fill = "#0000FF") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Mean Cluster Size") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Mean Cluster Sizes in Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/combined/combined_ballmapper_mean_cluster_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = median_cluster_size)) +
+  geom_boxplot(fill = "#0000FF") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Median Cluster Size") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Median Cluster Sizes in Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/combined/combined_ballmapper_median_cluster_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = mean_jaccard)) +
+  geom_boxplot(fill = "forestgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Mean Jaccard Index") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Mean Overlap in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/combined/combined_ballmapper_mean_jaccard.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = median_jaccard)) +
+  geom_boxplot(fill = "forestgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Tree Distance)") +
+  ylab("Median Jaccard Index") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Median Overlap in Structural Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/combined/combined_ballmapper_median_jaccard.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = human_means)) +
+  geom_boxplot(fill = "#FF0000") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Correlation Between Mean Log2 Human ASSET and Mean Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Correlations Between Mean Human Affinity and Mean SELEX Enrichment in Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/combined/combined_ballmapper_mean_human_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = human_medians)) +
+  geom_boxplot(fill = "#FF0000") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Correlation Between Median Log2 Human ASSET and Median Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Correlations Between Median Human Affinity and Median SELEX Enrichment in Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/combined/combined_ballmapper_median_human_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = mouse_means)) +
+  geom_boxplot(fill = "#FFB0B0") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Correlation Between Mean Log2 Mouse ASSET and Mean Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Correlations Between Mean Mouse Affinity and Mean SELEX Enrichment in Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/combined/combined_ballmapper_mean_mouse_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(combined_cors, aes(x = eps, y = mouse_medians)) +
+  geom_boxplot(fill = "#FFB0B0") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Edit + Tree Distance)") +
+  ylab("Correlation Between Median Log2 Mouse ASSET and Median Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = combined_range - 1) +
+  ggtitle("Correlations Between Median Mouse Affinity and Median SELEX Enrichment in Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/combined/combined_ballmapper_median_mouse_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+
+print(paste("time taken:", as.numeric(Sys.time() - start)))
+write.csv(combined_cors, "plots/combined/combined_data.csv")
+rm(combined_cors)
+print("creating normalized correlation data...")
+start = Sys.time()
+
+normal_range = seq(.075, .675, .025)
+normal_data = lapply(normal_range, get_cors, dists = both_normalized_dists)
+normal_cors = as.data.frame(sapply(1:ncol(normal_data[[1]]), function(y) as.vector(sapply(normal_data, function(x) x[, y]))))
+rm(normal_data)
+colnames(normal_cors) = aptamer_data_names
+normal_cors[, "eps"] = as.factor(normal_cors[, "eps"])
+
+ggplot(normal_cors, aes(x = eps, y = order)) +
+  geom_boxplot(fill = "orange") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Order") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Orders of Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/normal/normal_ballmapper_order.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = size)) +
+  geom_boxplot(fill = "violet") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Size") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Sizes of Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/normal/normal_ballmapper_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = density)) +
+  geom_boxplot(fill = "lightgray") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Density") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Densities of Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/normal/normal_ballmapper_density.jpg", height = 2000, width = 3236, units = "px")
+
+
+ggplot(normal_cors, aes(x = eps, y = mean_wcss)) +
+  geom_boxplot(fill = "darkcyan") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Mean WCSS") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Mean Within-Cluster Sum of Squared Distances in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/normal/normal_ballmapper_mean_wcss.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = median_wcss)) +
+  geom_boxplot(fill = "darkcyan") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Median WCSS") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Median Within-Cluster Sum of Squared Distances in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/normal/normal_ballmapper_median_wcss.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = mean_cluster_size)) +
+  geom_boxplot(fill = "#0000FF") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Mean Cluster Size") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Mean Cluster Sizes in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/normal/normal_ballmapper_mean_cluster_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = median_cluster_size)) +
+  geom_boxplot(fill = "#0000FF") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Median Cluster Size") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Median Cluster Sizes in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/normal/normal_ballmapper_median_cluster_size.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = mean_jaccard)) +
+  geom_boxplot(fill = "forestgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Mean Jaccard Index") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Mean Overlap in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/normal/normal_ballmapper_mean_jaccard.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = median_jaccard)) +
+  geom_boxplot(fill = "forestgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Median Jaccard Index") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Median Overlap in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+# geom_boxplot(width=0.1, fill = "white")
+ggsave("plots/normal/normal_ballmapper_median_jaccard.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = human_means)) +
+  geom_boxplot(fill = "#FF0000") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Correlation Between Mean Log2 Human ASSET and Mean Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Correlations Between Mean Human Affinity and Mean SELEX Enrichment in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/normal/normal_ballmapper_mean_human_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = human_medians)) +
+  geom_boxplot(fill = "#FF0000") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Correlation Between Median Log2 Human ASSET and Median Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Correlations Between Median Human Affinity and Median SELEX Enrichment in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/normal/normal_ballmapper_median_human_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = mouse_means)) +
+  geom_boxplot(fill = "#FFB0B0") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Correlation Between Mean Log2 Mouse ASSET and Mean Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Correlations Between Mean Mouse Affinity and Mean SELEX Enrichment in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/normal/normal_ballmapper_mean_mouse_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+ggplot(normal_cors, aes(x = eps, y = mouse_medians)) +
+  geom_boxplot(fill = "#FFB0B0") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("Ball Radius (Normalized Edit + Tree Distance)") +
+  ylab("Correlation Between Median Log2 Mouse ASSET and Median Log2 R0A-R9 Enrichment") +
+  scale_x_discrete(labels = normal_range) +
+  ggtitle("Correlations Between Median Mouse Affinity and Median SELEX Enrichment in Normalized Combined Ball Mapptamer Graphs") +
+  theme(plot.title = element_text(size = 12))
+ggsave("plots/normal/normal_ballmapper_median_mouse_affinity_selex_enrichment_corrs.jpg", height = 2000, width = 3236, units = "px")
+
+print(paste("time taken:", as.numeric(Sys.time() - start)))
+write.csv(normal_cors, "plots/normal/normal_data.csv")
+rm(normal_cors)
