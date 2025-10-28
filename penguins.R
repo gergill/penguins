@@ -1,5 +1,6 @@
 library(mappeR)
 library(RCy3)
+library(igraph)
 
 clean_penguins = na.omit(penguins)
 clean_penguins$id = 1:nrow(clean_penguins)
