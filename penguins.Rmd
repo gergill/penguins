@@ -4,6 +4,9 @@ output:
   pdf_document: default
   html_document: default
 ---
+In this vignette we will explore the `penguins` data set with `mappeR`. The data is available natively in R, and the required packages, `mappeR` and `RCy3` are available on CRAN and Bioconductor, respectively. Cytoscape itself can be downloaded for free at [https://cytoscape.org/](https://cytoscape.org/).
+
+![Palmer Penguins Art](penguins.png)
 
 ```{r}
 knitr::opts_chunk$set(fig.pos = "H", out.extra = "")
@@ -22,9 +25,7 @@ library(mappeR)
 library(RCy3)
 ```
 
-In this vignette we will explore the `penguins` data set with `mappeR`. The data set contains measurements and characteristics of 344 penguins from three islands in the Palmer Archipelago, Antarctica. It is available natively in R.
-
-![Palmer Penguins Art](penguins.png)
+The `penguins` data set contains measurements and characteristics of 344 penguins from three islands in the Palmer Archipelago, Antarctica.
 
 ```{r}
 head(penguins)
@@ -41,8 +42,7 @@ One idea of the Mapper algorithm is to look at data points "in their own space."
 
 ```{r}
 # get numerical columns only
-penguin_numbers = subset(clean_penguins,
-                         select = c(bill_len, bill_dep, flipper_len, body_mass))
+penguin_numbers = clean_penguins[, c("bill_len", "bill_dep", "flipper_len", "body_mass")]
 head(penguin_numbers)
 
 # perform z normalization
